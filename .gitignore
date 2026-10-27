@@ -1,0 +1,6 @@
+/build/
+/manual-build/
+/data/
+/demo-store/
+/samples/
+*.tmp.*

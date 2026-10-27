@@ -1,0 +1,8 @@
+#include "storage_engine.h"
+#include "errors.h"
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+using namespace flashforge;
+namespace { void usage(){std::cerr<<"Usage: flashforge [--data DIR] <put|get|update|delete|list|stats|gc> ...\n";} }
+int main(int argc,char**argv){try{int i=1;std::filesystem::path root="data";if(i+1<argc&&std::string(argv[i])=="--data"){root=argv[i+1];i+=2;}if(i>=argc){usage();return 2;}StorageEngine e(root);std::string cmd=argv[i++];if(cmd=="put"&&i<argc){std::cout<<e.put(argv[i])<<'\n';}else if(cmd=="get"&&i+1<argc){e.get(argv[i],argv[i+1]);std::cout<<"restored\n";}else if(cmd=="update"&&i+1<argc){e.update(argv[i],argv[i+1]);std::cout<<"updated\n";}else if(cmd=="delete"&&i<argc){e.deleteFile(argv[i]);std::cout<<"deleted\n";}else if(cmd=="list"){for(const auto&f:e.listFiles())std::cout<<f.file_id<<'\t'<<f.logical_size<<'\t'<<f.version<<'\t'<<f.original_filename<<'\n';}else if(cmd=="stats"){auto s=e.stats();std::cout<<"Logical storage:     "<<s.logical_size<<" bytes\nPhysical storage:    "<<s.physical_size<<" bytes\nSpace saved:         "<<s.space_saved<<" bytes\nDedup ratio:         "<<std::fixed<<std::setprecision(2)<<s.dedup_ratio<<"x\nUnique chunks:       "<<s.unique_chunks<<"\nChunk references:    "<<s.total_chunk_references<<"\nFiles:               "<<s.file_count<<'\n';}else if(cmd=="gc"){auto s=e.collectGarbage();std::cout<<"Chunks scanned: "<<s.chunks_scanned<<"\nChunks deleted: "<<s.chunks_deleted<<"\nBytes reclaimed: "<<s.bytes_reclaimed<<'\n';}else{usage();return 2;}return 0;}catch(const std::exception&e){std::cerr<<"flashforge: "<<e.what()<<'\n';return 1;}}
