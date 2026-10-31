@@ -351,14 +351,33 @@ Physical bytes waiting for GC are intentionally excluded from live physical stat
 FlashForge includes a native observability layer in the same C++ binary. It does more than expose counters: it correlates operation latency, hashing time, durable commit time, dedup behavior, corruption events, garbage collection, filesystem capacity, and Linux pressure signals into explainable engineering recommendations.
 
 ```mermaid
-flowchart LR
-    Ops[PUT / GET / UPDATE / DELETE / GC] --> Timer[RAII operation timers]
-    Timer --> Store[Bounded append-only telemetry]
-    Proc[Linux procfs + PSI] --> Report[Observability report]
-    Store --> Report
-    Report --> Rules[Explainable decision rules]
-    Rules --> CLI[observe / diagnose / incidents]
-    Store --> Export[JSON + Prometheus export]
+flowchart TD
+    Client[CLI operation] --> Engine[StorageEngine]
+
+    Engine --> Timer[RAII OperationTimer]
+    Engine --> Hash[Parallel chunk hashing]
+    Engine --> WAL[WAL write and fsync]
+    Engine --> Meta[Metadata write, fsync and rename]
+    Engine --> GC[Garbage collector]
+
+    Timer --> Sample[OperationSample]
+    Hash --> Sample
+    WAL --> Sample
+    Meta --> Sample
+    GC --> Sample
+
+    Sample --> Queue[Bounded queue - 1024 samples]
+    Queue --> Writer[Background writer thread]
+    Writer --> History[observability/metrics.tsv]
+
+    History --> Report[Metrics aggregation]
+    Proc[Linux procfs and PSI] --> Report
+    Report --> Rules[Explainable decision engine]
+
+    Rules --> Observe[flashforge observe]
+    Rules --> Diagnose[flashforge diagnose]
+    Report --> JSON[JSON export]
+    Report --> Prom[Prometheus export]
 ```
 
 Telemetry is deliberately outside the correctness path. Operation completion only attempts to enqueue a sample into a fixed-capacity in-memory queue; it never performs telemetry disk I/O. A background thread drains samples in batches, exceptions are contained, and metrics are stored under `data/observability/` rather than in the storage WAL. When the queue is full or persistence fails, samples are dropped and `flashforge_telemetry_samples_dropped_total` increases. A telemetry failure therefore cannot fail a storage operation or corrupt authoritative metadata. The local history is bounded to 10,000 samples and compacted automatically. Set `FLASHFORGE_OBSERVABILITY=0` to measure the engine with collection disabled.
