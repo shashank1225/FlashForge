@@ -3,6 +3,7 @@
 #include "garbage_collector.h"
 #include "hash_index.h"
 #include "metadata_store.h"
+#include "observability.h"
 #include "thread_pool.h"
 #include "wal.h"
 #include <cstdint>
@@ -27,12 +28,17 @@ class StorageEngine {
   StorageStats stats() const;
   GCStats collectGarbage();
   std::uint64_t chunkRefCount(const std::string& hash) const;
+  ObservabilityReport observabilityReport() const { return metrics_.report(); }
+  std::vector<EngineeringDecision> diagnose() const { return metrics_.diagnose(); }
+  std::string metricsJson() const { return metrics_.json(); }
+  std::string metricsPrometheus() const { return metrics_.prometheus(); }
  private:
   std::filesystem::path chunkPath(const std::string& hash) const;
   void persistChunk(const Chunk& chunk);
   std::vector<Chunk> prepareChunks(const std::filesystem::path& source);
   void rebuildIndex(); void commitState();
   std::filesystem::path root_, chunks_root_; FixedSizeChunker chunker_;
+  mutable MetricsStore metrics_;
   mutable std::shared_mutex state_mutex_; MetadataStore metadata_; HashIndex index_;
   WriteAheadLog wal_; ThreadPool pool_;
 };

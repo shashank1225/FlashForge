@@ -10,7 +10,8 @@ find_package(Threads REQUIRED)
 
 add_library(flashforge_lib
   src/checksum.cpp src/chunker.cpp src/thread_pool.cpp src/hash_index.cpp
-  src/metadata_store.cpp src/wal.cpp src/garbage_collector.cpp src/storage_engine.cpp)
+  src/metadata_store.cpp src/wal.cpp src/garbage_collector.cpp src/observability.cpp
+  src/storage_engine.cpp)
 target_include_directories(flashforge_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(flashforge_lib PRIVATE -Wall -Wextra -Wpedantic)
 target_link_libraries(flashforge_lib PUBLIC Threads::Threads)

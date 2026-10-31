@@ -2,7 +2,7 @@
 
 FlashForge is a single-node, content-addressed, deduplicating storage engine written in modern C++20. It stores files as ordered 4 KiB chunks, persists each unique chunk once, tracks logical objects and reference counts, detects corruption during reads, and recovers committed metadata changes after a crash. It is deliberately small enough to explain at a whiteboard while exercising real storage-engine concerns: durability ordering, copy-on-write, checksums, garbage collection, concurrency, and I/O scaling.
 
-> **Project status:** complete and runnable. The clean CMake build passes, all 19 test scenarios pass, and the CLI, recovery path, garbage collector, corruption detector, and 1–32 worker benchmark have been exercised locally.
+> **Project status:** complete and runnable. The clean CMake build passes, all 21 test scenarios pass, and the CLI, recovery path, garbage collector, corruption detector, observability layer, decision engine, and 1–32 worker benchmark have been exercised locally.
 
 ## Why FlashForge?
 
@@ -37,6 +37,7 @@ The project is intentionally focused on the storage data path rather than networ
 - [Concurrency and locking](#concurrency-and-locking)
 - [Garbage collection](#garbage-collection)
 - [Statistics](#statistics)
+- [Integrated observability and engineering decisions](#integrated-observability-and-engineering-decisions)
 - [Benchmark](#benchmark)
 - [Tests](#tests)
 - [Interview discussion guide](#interview-discussion-guide)
@@ -152,7 +153,7 @@ flashforge/
 ├── README.md
 ├── include/                 # Public interfaces and error types
 ├── src/                     # Engine implementation and CLI
-├── tests/test_main.cpp      # 19 isolated functional/race/recovery scenarios
+├── tests/test_main.cpp      # 21 isolated functional/race/recovery/observability scenarios
 ├── benchmark/benchmark.cpp  # Real 1–32 worker benchmark
 └── scripts/create_demo_data.sh
 ```
@@ -344,6 +345,56 @@ Deferral keeps the transactional path simple: the engine never needs to make met
 - **Files:** number of logical objects.
 
 Physical bytes waiting for GC are intentionally excluded from live physical statistics but are reported as reclaimed bytes when GC runs.
+
+## Integrated observability and engineering decisions
+
+FlashForge includes a native observability layer in the same C++ binary. It does more than expose counters: it correlates operation latency, hashing time, durable commit time, dedup behavior, corruption events, garbage collection, filesystem capacity, and Linux pressure signals into explainable engineering recommendations.
+
+```mermaid
+flowchart LR
+    Ops[PUT / GET / UPDATE / DELETE / GC] --> Timer[RAII operation timers]
+    Timer --> Store[Bounded append-only telemetry]
+    Proc[Linux procfs + PSI] --> Report[Observability report]
+    Store --> Report
+    Report --> Rules[Explainable decision rules]
+    Rules --> CLI[observe / diagnose / incidents]
+    Store --> Export[JSON + Prometheus export]
+```
+
+Telemetry is deliberately outside the correctness path. Recording is best-effort, exceptions are contained, and metrics are stored under `data/observability/` rather than in the storage WAL. A telemetry failure therefore cannot fail a storage operation or corrupt authoritative metadata. The local history is bounded to 10,000 samples and compacted automatically.
+
+### Commands
+
+```bash
+# Human-readable latency, reliability, capacity, and current diagnosis
+./flashforge --data ./store observe
+
+# Evidence-backed engineering recommendations only
+./flashforge --data ./store diagnose
+
+# Active reliability findings (same decision model, incident-oriented output)
+./flashforge --data ./store incidents
+
+# Machine-readable integrations
+./flashforge --data ./store metrics --format json
+./flashforge --data ./store metrics --format prometheus
+```
+
+The layer records operation count, failures, bytes, p50/p95/p99 latency, hashing time, durable commit time, dedup hits/misses, checksum failures, and GC reclamation. On Linux it additionally reads process RSS and I/O, open file descriptors, filesystem capacity, and kernel PSI I/O/memory pressure from `/proc`; unavailable platform signals are reported honestly rather than synthesized.
+
+### From signals to decisions
+
+| Correlated evidence | Diagnosis | Recommended decision |
+|---|---|---|
+| High PUT p99 and durable commit dominates | Filesystem/WAL durability bottleneck | Investigate storage latency; more hash workers will not help |
+| High PUT p99 and hashing dominates | CPU hashing bottleneck | Increase workers only while CPU headroom exists |
+| PUT failure rate above 5% | Reliability incident | Inspect capacity, permissions, and WAL errors before retrying traffic |
+| Checksum failure | Stored data corruption | Quarantine data and run an integrity scrub |
+| Dedup hit ratio below 10% after enough chunks | Low workload locality | Evaluate content-defined chunking before adding capacity |
+| Filesystem below 10% free | Capacity incident | Run GC, review retention, or add capacity |
+| Linux PSI I/O pressure above 20% | Sustained I/O contention | Inspect device latency and rate-limit background GC |
+
+Each result contains severity, diagnosis, concrete evidence, confidence, and a recommended action. The rules are deterministic and unit tested, so an engineer can audit why a recommendation was made.
 
 ## Benchmark
 
