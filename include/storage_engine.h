@@ -36,7 +36,7 @@ class StorageEngine {
   std::filesystem::path chunkPath(const std::string& hash) const;
   void persistChunk(const Chunk& chunk);
   std::vector<Chunk> prepareChunks(const std::filesystem::path& source);
-  void rebuildIndex(); void commitState();
+  void rebuildIndex(); void commitState(OperationTimer& operation);
   std::filesystem::path root_, chunks_root_; FixedSizeChunker chunker_;
   mutable MetricsStore metrics_;
   mutable std::shared_mutex state_mutex_; MetadataStore metadata_; HashIndex index_;

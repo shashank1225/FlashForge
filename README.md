@@ -2,7 +2,7 @@
 
 FlashForge is a single-node, content-addressed, deduplicating storage engine written in modern C++20. It stores files as ordered 4 KiB chunks, persists each unique chunk once, tracks logical objects and reference counts, detects corruption during reads, and recovers committed metadata changes after a crash. It is deliberately small enough to explain at a whiteboard while exercising real storage-engine concerns: durability ordering, copy-on-write, checksums, garbage collection, concurrency, and I/O scaling.
 
-> **Project status:** complete and runnable. The clean CMake build passes, all 21 test scenarios pass, and the CLI, recovery path, garbage collector, corruption detector, observability layer, decision engine, and 1–32 worker benchmark have been exercised locally.
+> **Project status:** complete and runnable. The clean CMake build passes, all 23 test scenarios pass, and the CLI, recovery path, garbage collector, corruption detector, fail-open observability layer, decision engine, controlled WAL-delay experiment, and benchmarks have been exercised locally.
 
 ## Why FlashForge?
 
@@ -153,7 +153,7 @@ flashforge/
 ├── README.md
 ├── include/                 # Public interfaces and error types
 ├── src/                     # Engine implementation and CLI
-├── tests/test_main.cpp      # 21 isolated functional/race/recovery/observability scenarios
+├── tests/test_main.cpp      # 23 isolated functional/race/recovery/observability scenarios
 ├── benchmark/benchmark.cpp  # Real 1–32 worker benchmark
 └── scripts/create_demo_data.sh
 ```
@@ -361,7 +361,7 @@ flowchart LR
     Store --> Export[JSON + Prometheus export]
 ```
 
-Telemetry is deliberately outside the correctness path. Recording is best-effort, exceptions are contained, and metrics are stored under `data/observability/` rather than in the storage WAL. A telemetry failure therefore cannot fail a storage operation or corrupt authoritative metadata. The local history is bounded to 10,000 samples and compacted automatically.
+Telemetry is deliberately outside the correctness path. Operation completion only attempts to enqueue a sample into a fixed-capacity in-memory queue; it never performs telemetry disk I/O. A background thread drains samples in batches, exceptions are contained, and metrics are stored under `data/observability/` rather than in the storage WAL. When the queue is full or persistence fails, samples are dropped and `flashforge_telemetry_samples_dropped_total` increases. A telemetry failure therefore cannot fail a storage operation or corrupt authoritative metadata. The local history is bounded to 10,000 samples and compacted automatically. Set `FLASHFORGE_OBSERVABILITY=0` to measure the engine with collection disabled.
 
 ### Commands
 
@@ -380,13 +380,13 @@ Telemetry is deliberately outside the correctness path. Recording is best-effort
 ./flashforge --data ./store metrics --format prometheus
 ```
 
-The layer records operation count, failures, bytes, p50/p95/p99 latency, hashing time, durable commit time, dedup hits/misses, checksum failures, and GC reclamation. On Linux it additionally reads process RSS and I/O, open file descriptors, filesystem capacity, and kernel PSI I/O/memory pressure from `/proc`; unavailable platform signals are reported honestly rather than synthesized.
+The layer records operation count, failures, bytes, p50/p95/p99 latency, hashing time, dedup hits/misses, checksum failures, and GC reclamation. The durability path is split into WAL write, WAL `fsync`, metadata write, metadata `fsync`, atomic rename, and directory `fsync` timing. On Linux it additionally reads process RSS and I/O, open file descriptors, filesystem capacity, and kernel PSI I/O/memory pressure from `/proc`; unavailable platform signals are reported honestly rather than synthesized. PSI represents task stall pressure, not disk utilization, and the diagnostics deliberately preserve that distinction.
 
 ### From signals to decisions
 
 | Correlated evidence | Diagnosis | Recommended decision |
 |---|---|---|
-| High PUT p99 and durable commit dominates | Filesystem/WAL durability bottleneck | Investigate storage latency; more hash workers will not help |
+| High PUT p99 and WAL synchronization dominates | WAL synchronization is the likely contributor, not proof of disk saturation | Inspect the sync and block-device path; more hash workers are unlikely to help |
 | High PUT p99 and hashing dominates | CPU hashing bottleneck | Increase workers only while CPU headroom exists |
 | PUT failure rate above 5% | Reliability incident | Inspect capacity, permissions, and WAL errors before retrying traffic |
 | Checksum failure | Stored data corruption | Quarantine data and run an integrity scrub |
@@ -394,7 +394,36 @@ The layer records operation count, failures, bytes, p50/p95/p99 latency, hashing
 | Filesystem below 10% free | Capacity incident | Run GC, review retention, or add capacity |
 | Linux PSI I/O pressure above 20% | Sustained I/O contention | Inspect device latency and rate-limit background GC |
 
-Each result contains severity, diagnosis, concrete evidence, confidence, and a recommended action. The rules are deterministic and unit tested, so an engineer can audit why a recommendation was made.
+Each result contains severity, diagnosis, concrete evidence, confidence, and a recommended action. Recommendations never execute operational changes: FlashForge does not automatically change worker counts, pause GC, remove suspected corrupt chunks, or weaken durability. The rules are deterministic and unit tested, so an engineer can audit why a recommendation was made.
+
+### Reproducible WAL bottleneck experiment
+
+The test-only fault injector delays each WAL synchronization when `FLASHFORGE_FAULT_WAL_FSYNC_DELAY_MS` is set. It is disabled by default, recorded in telemetry, and disclosed in diagnosis output.
+
+```bash
+./scripts/demo_slow_wal.sh ./build/flashforge
+```
+
+The script runs three isolated stores:
+
+```text
+normal workload
+  -> inject 100 ms before WAL fsync
+  -> observe PUT and WAL fsync latency rise together
+  -> receive a likely-cause diagnosis with evidence
+  -> remove injection
+  -> verify latency returns toward baseline
+```
+
+This demonstrates correlation, not false certainty. A slow WAL `fsync` identifies the synchronization stage contributing latency; proving physical disk saturation would additionally require block-device latency, queue-depth, and throughput evidence.
+
+### Measuring observability overhead
+
+```bash
+./build/flashforge_observability_benchmark 16
+```
+
+The benchmark runs the same deterministic PUT workload three times with observability disabled and three times enabled, reports each real measurement as CSV, then calculates median overhead. Results are intentionally not hard-coded: filesystem cache state, storage hardware, durability latency, workload size, and scheduling materially affect them. Small durability-heavy workloads can exaggerate percentage overhead, so report the workload and raw trials with any result.
 
 ## Benchmark
 

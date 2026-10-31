@@ -27,6 +27,8 @@ add_executable(flashforge_tests tests/test_main.cpp)
 target_link_libraries(flashforge_tests PRIVATE flashforge_lib)
 add_executable(flashforge_benchmark benchmark/benchmark.cpp)
 target_link_libraries(flashforge_benchmark PRIVATE flashforge_lib)
+add_executable(flashforge_observability_benchmark benchmark/observability_overhead.cpp)
+target_link_libraries(flashforge_observability_benchmark PRIVATE flashforge_lib)
 
 enable_testing()
 add_test(NAME flashforge_tests COMMAND flashforge_tests)
